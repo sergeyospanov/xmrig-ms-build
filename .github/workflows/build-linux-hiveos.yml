@@ -1,0 +1,89 @@
+name: build-linux-hiveos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          lsb_release -a
+          gcc --version | head -1
+          cmake --version | head -1
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libtool autoconf automake \
+            libuv1-dev libssl-dev zlib1g-dev
+          echo "--- static archives:"
+          ls -la /usr/lib/x86_64-linux-gnu/libuv.a \
+                 /usr/lib/x86_64-linux-gnu/libssl.a \
+                 /usr/lib/x86_64-linux-gnu/libcrypto.a \
+                 /usr/lib/x86_64-linux-gnu/libc.a
+
+      - name: Build hwloc (static, no udev)
+        working-directory: deps
+        run: |
+          curl -sSL -o hwloc.tar.gz https://download.open-mpi.org/release/hwloc/v2.10/hwloc-2.10.0.tar.gz
+          tar xzf hwloc.tar.gz
+          cd hwloc-2.10.0
+          ./configure --prefix="$GITHUB_WORKSPACE/deps/install" \
+            --enable-static --disable-shared \
+            --disable-libudev --disable-cuda --disable-gl --disable-nvml
+          make -j"$(nproc)"
+          make install
+          # xmrig includes <hwloc.h>: replicate the layout xmrig expects
+          cp -r "$GITHUB_WORKSPACE/deps/install/include/hwloc/"* "$GITHUB_WORKSPACE/deps/install/include/"
+          ls -la "$GITHUB_WORKSPACE/deps/install/lib" "$GITHUB_WORKSPACE/deps/install/include" | head -20
+          ls /usr/lib/x86_64-linux-gnu/libz.a
+
+      - name: Configure (static x86_64)
+        run: |
+          P="$GITHUB_WORKSPACE/deps/install"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DBUILD_STATIC=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-lz" \
+            -DHWLOC_LIBRARY="$P/lib/libhwloc.a" \
+            -DHWLOC_INCLUDE_DIR="$P/include"
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(nproc)"
+          file build/xmrig
+          ls -la build/xmrig
+          ldd build/xmrig || echo "ldd: not a dynamic executable (good)"
+
+      - name: Verify static
+        run: |
+          file build/xmrig | grep -q "statically linked" || { echo "NOT fully static"; exit 1; }
+          echo "OK: fully static binary"
+
+      - name: Pack
+        run: |
+          mkdir -p package
+          cp build/xmrig package/xmrig
+          cp src/config.json package/config.json
+          cp hive/h-manifest.conf hive/h-run.sh hive/h-stats.sh hive/h-config.sh package/
+          chmod +x package/h-*.sh package/xmrig
+          ( cd package && zip -9r ../out-package.zip . )
+          mkdir -p out && mv out-package.zip out/xmrig-6.26.0-hiveos-x64-optimized.zip
+          (cd out && sha256sum xmrig-6.26.0-hiveos-x64-optimized.zip > SHA256SUMS.txt)
+          ls -la out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-6.26.0-hiveos-x64-optimized
+          path: out/

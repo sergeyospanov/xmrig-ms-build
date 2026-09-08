@@ -1,0 +1,87 @@
+name: build-windows-msvc
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import MSVC environment
+        shell: pwsh
+        run: |
+          $vsw = vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsw) { throw "VS not found" }
+          $devcmd = Join-Path $vsw 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path $devcmd)) { throw "VsDevCmd not found at $devcmd" }
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && set" | Out-File -Encoding ascii "$env:GITHUB_WORKSPACE\vsenv.txt"
+          Write-Host "Imported MSVC env from $vsw"
+
+      - name: Configure (Ninja + cl, UCRT, Release)
+        shell: pwsh
+        run: |
+          foreach ($line in (Get-Content "$env:GITHUB_WORKSPACE\vsenv.txt")) {
+            if ($line -match '^([^=]+)=(.*)$') { Set-Item -Path ("env:"+$matches[1]) -Value $matches[2] }
+          }
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { Write-Error "cl.exe not on PATH"; exit 1 }
+          cl /? 2>&1 | Select-Object -First 3
+          cmake --version
+          $deps = Join-Path $env:GITHUB_WORKSPACE 'xmrig-deps/msvc2022/x64'
+          Get-ChildItem $deps | Select-Object Name
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXE_LINKER_FLAGS="/OPT:REF /OPT:ICF" "-DXMRIG_DEPS=$deps"
+          if ($LASTEXITCODE -ne 0) { Write-Error "configure failed"; exit 1 }
+
+      - name: Build (Release)
+        shell: pwsh
+        run: |
+          foreach ($line in (Get-Content "$env:GITHUB_WORKSPACE\vsenv.txt")) {
+            if ($line -match '^([^=]+)=(.*)$') { Set-Item -Path ("env:"+$matches[1]) -Value $matches[2] }
+          }
+          cmake --build build -- -j8
+          if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 1 }
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $work = $env:GITHUB_WORKSPACE
+          $exe  = Get-ChildItem -Recurse -Filter xmrig.exe "$work\build" | Select-Object -First 1
+          Write-Host ("exe: {0} size={1}" -f $exe.FullName, $exe.Length)
+          $out  = Join-Path $work 'out'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item $exe.FullName (Join-Path $out 'xmrig.exe') -Force
+
+          # config.json (stock layout)
+          $cfg = Get-Content "$work\src\config.json" -Raw
+          Set-Content -Path (Join-Path $out 'config.json') -Value $cfg -NoNewline
+
+          # start.cmd (CRLF)
+          $cmdLines = @(
+            '@echo off',
+            'cd /d %~dp0',
+            'echo Starting XMRig 6.26.0 optimized (MSVC build)...',
+            'start "" xmrig.exe -c config.json'
+          )
+          [System.IO.File]::WriteAllText((Join-Path $out 'start.cmd'), ($cmdLines -join "`r`n"))
+
+          # SHA256
+          $h = (Get-FileHash (Join-Path $out 'xmrig.exe') -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path (Join-Path $out 'SHA256SUMS.txt') -Value "$h  xmrig.exe" -Encoding ASCII
+
+          Get-ChildItem $out | Select-Object Name, Length | Format-Table -AutoSize
+          $zip = Join-Path $work 'xmrig-6.26.0-windows-msvc-x64-optimized.zip'
+          Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -Force
+          Get-Item $zip | Select-Object Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-6.26.0-windows-msvc-x64-optimized
+          path: |
+            xmrig-6.26.0-windows-msvc-x64-optimized.zip
+            out/
