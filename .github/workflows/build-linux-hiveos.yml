@@ -39,7 +39,8 @@ jobs:
           cd hwloc-2.10.0
           ./configure --prefix="$GITHUB_WORKSPACE/deps/install" \
             --enable-static --disable-shared \
-            --disable-libudev --disable-cuda --disable-gl --disable-nvml
+            --disable-libudev --disable-cuda --disable-gl --disable-nvml \
+            --disable-libxml2 --disable-numa --disable-pci
           make -j"$(nproc)"
           make install
           # xmrig includes <hwloc.h>: replicate the layout xmrig expects
