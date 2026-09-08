@@ -32,8 +32,8 @@ jobs:
                  /usr/lib/x86_64-linux-gnu/libc.a
 
       - name: Build hwloc (static, no udev)
-        working-directory: deps
         run: |
+          mkdir -p deps && cd deps
           curl -sSL -o hwloc.tar.gz https://download.open-mpi.org/release/hwloc/v2.10/hwloc-2.10.0.tar.gz
           tar xzf hwloc.tar.gz
           cd hwloc-2.10.0
